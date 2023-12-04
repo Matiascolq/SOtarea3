@@ -8,15 +8,18 @@ typedef struct Inode {
     int permissions;
     int id;
     struct Inode *parent;
-    struct Inode **children; // Array de punteros a i-nodos hijos.
-    int childCount;          // Contador de hijos.
+    struct Inode **children;
+    int childCount;
 } Inode;
 
-Inode *currentDirectory; // Referencia global al directorio actual.
-
+Inode *currentDirectory;
 
 Inode *createInode(char *name, int size, int permissions, int id, Inode *parent) {
     Inode *newInode = (Inode *)malloc(sizeof(Inode));
+    if (!newInode) {
+        perror("Error al asignar memoria para Inode");
+        exit(EXIT_FAILURE);
+    }
     strcpy(newInode->name, name);
     newInode->size = size;
     newInode->permissions = permissions;
@@ -30,6 +33,10 @@ Inode *createInode(char *name, int size, int permissions, int id, Inode *parent)
 void addChild(Inode *parent, Inode *child) {
     parent->childCount++;
     parent->children = realloc(parent->children, parent->childCount * sizeof(Inode *));
+    if (!parent->children) {
+        perror("Error al reasignar memoria para los hijos del Inode");
+        exit(EXIT_FAILURE);
+    }
     parent->children[parent->childCount - 1] = child;
 }
 
@@ -69,15 +76,26 @@ void deleteInode(Inode *inode) {
     free(inode);
 }
 
-//Funcion para cambiar de directorio
 void cd(Inode **currentDir, char *name) {
-    for (int i = 0; i < (*currentDir)->childCount; i++) {
-        if (strcmp((*currentDir)->children[i]->name, name) == 0) {
-            *currentDir = (*currentDir)->children[i];
-            return;
-        }
+    if (strcmp(name, ".") == 0) {
+        // No hacer nada si es el directorio actual
+        return;
     }
-    printf("No existe el directorio: %s\n", name);
+    if (strcmp(name, "..") == 0) {
+        if ((*currentDir)->parent != NULL) {
+            *currentDir = (*currentDir)->parent;
+        } else {
+            printf("Ya estás en el directorio raíz.\n");
+        }
+    } else {
+        for (int i = 0; i < (*currentDir)->childCount; i++) {
+            if (strcmp((*currentDir)->children[i]->name, name) == 0 && (*currentDir)->children[i] != *currentDir) {
+                *currentDir = (*currentDir)->children[i];
+                return;
+            }
+        }
+        printf("No existe el directorio: %s\n", name);
+    }
 }
 
 //Funcion para renombrar archivos o directorios
@@ -122,46 +140,97 @@ void ls(Inode *inode) {
 
 //Funcion para mover archivos y directorios
 void mv(Inode *inode, char *name, Inode *newParent) {
+    Inode *childToMove = NULL;
+    int childIndex = -1;
+
     for (int i = 0; i < inode->childCount; i++) {
         if (strcmp(inode->children[i]->name, name) == 0) {
-            Inode *childToMove = inode->children[i];
-            // Eliminar de la lista actual
-            for (int j = i; j < inode->childCount - 1; j++) {
-                inode->children[j] = inode->children[j + 1];
-            }
-            inode->childCount--;
-            inode->children = realloc(inode->children, inode->childCount * sizeof(Inode *));
-            // Agregar al nuevo padre
-            addChild(newParent, childToMove);
-            childToMove->parent = newParent;
-            return;
+            childToMove = inode->children[i];
+            childIndex = i;
+            break;
         }
     }
-    printf("No existe el directorio: %s\n", name);
+
+    if (childToMove == NULL) {
+        printf("No existe el archivo o directorio: %s\n", name);
+        return;
+    }
+
+    // Eliminar de la lista actual
+    for (int i = childIndex; i < inode->childCount - 1; i++) {
+        inode->children[i] = inode->children[i + 1];
+    }
+    inode->childCount--;
+    inode->children = realloc(inode->children, inode->childCount * sizeof(Inode *));
+
+    if (inode->children == NULL && inode->childCount > 0) {
+        perror("Error al reasignar memoria para los hijos del Inode");
+        exit(EXIT_FAILURE);
+    }
+
+    // Agregar al nuevo padre
+    addChild(newParent, childToMove);
+    childToMove->parent = newParent;
 }
 
 //Funcion para eliminar archivos y directorios
 void rm(Inode *inode, char *name) {
+    if (strcmp(inode->name, name) == 0) {
+        printf("No se puede eliminar el directorio de trabajo actual.\n");
+        return;
+    }
+
+    Inode *toDelete = NULL;
+    int indexToDelete = -1;
+    
     for (int i = 0; i < inode->childCount; i++) {
         if (strcmp(inode->children[i]->name, name) == 0) {
-            deleteInode(inode->children[i]); // Elimina recursivamente
-            // Reorganizar la lista de hijos
-            for (int j = i; j < inode->childCount - 1; j++) {
-                inode->children[j] = inode->children[j + 1];
-            }
-            inode->childCount--;
-            inode->children = realloc(inode->children, inode->childCount * sizeof(Inode *));
-            return;
+            toDelete = inode->children[i];
+            indexToDelete = i;
+            break;
         }
     }
-    printf("No existe el directorio: %s\n", name);
+    
+    if (toDelete == NULL) {
+        printf("No existe el directorio: %s\n", name);
+        return;
+    }
+    
+    // Verificar que no estamos intentando eliminar el directorio actual o uno por encima
+    Inode *tempDir = currentDirectory;
+    while (tempDir) {
+        if (tempDir == toDelete) {
+            printf("Operación no permitida: intento de eliminar el directorio actual o un directorio padre.\n");
+            return;
+        }
+        tempDir = tempDir->parent;
+    }
+    
+    // Eliminar el i-nodo y sus hijos
+    deleteInode(toDelete);
+    
+    // Reorganizar la lista de hijos
+    for (int i = indexToDelete; i < inode->childCount - 1; i++) {
+        inode->children[i] = inode->children[i + 1];
+    }
+    inode->childCount--;
+    inode->children = realloc(inode->children, inode->childCount * sizeof(Inode *));
 }
 
 //Funcion para crear archivos
 void touch(Inode *inode, char *name) {
-    Inode *newInode = createInode(name, 0, 0, inode->childCount, inode);
+    // Verificar si el archivo ya existe en el directorio actual
+    for (int i = 0; i < inode->childCount; i++) {
+        if (strcmp(inode->children[i]->name, name) == 0) {
+            printf("El archivo '%s' ya existe.\n", name);
+            return;
+        }
+    }
+    Inode *newInode = createInode(name, 0, 0666, inode->childCount, inode); // Los archivos por lo general tienen permisos 0666 por defecto
     addChild(inode, newInode);
+    printf("Archivo '%s' creado.\n", name); // Mensaje de confirmación
 }
+
 
 //Funcion para crear directorios
 void mkdir(Inode *inode, char *name) {
@@ -181,16 +250,60 @@ void save(Inode *inode, FILE *file) {
 
 
 int main() {
-    Inode *root = createInode("root", 0, 0, 0, NULL);
-    Inode *home = createInode("home", 0, 0, 1, root);
-    Inode *user1 = createInode("user1", 0, 0, 2, home);
-    Inode *user2 = createInode("user2", 0, 0, 3, home);
-    Inode *user3 = createInode("user3", 0, 0, 4, home);
-    addChild(root, home);
-    addChild(home, user1);
-    addChild(home, user2);
-    addChild(home, user3);
-    printInodeTree(root);
+    // Inicialización del sistema de archivos
+    Inode *root = createInode("root", 0, 0777, 0, NULL);
+    currentDirectory = root; // Establece el directorio raíz como directorio actual
+
+    // Crear estructura de directorios y archivos
+    mkdir(currentDirectory, "home");
+    mkdir(currentDirectory, "etc");
+    touch(currentDirectory, "readme.txt");
+
+    // Renombrar archivo
+    renameInode(currentDirectory, "readme.txt", "README.md");
+
+    // Cambiar permisos de un archivo
+    chmod(currentDirectory, "README.md", 0644);
+
+    // Obtener metadata de un archivo
+    stat(currentDirectory, "README.md");
+
+    // Listar archivos y directorios en el directorio actual
+    ls(currentDirectory);
+
+    // Moverse al directorio 'home' y crear un archivo
+    cd(&currentDirectory, "home");
+    touch(currentDirectory, "user_guide.txt");
+
+    // Listar de nuevo para comprobar que 'user_guide.txt' existe en 'home'
+    ls(currentDirectory);
+
+    // Intentar mover 'user_guide.txt' desde 'home' a 'root'
+    cd(&currentDirectory, ".."); // Asegúrate de estar en el directorio raíz antes de mover el archivo desde 'home'
+    Inode *homeDir = NULL;
+    for (int i = 0; i < currentDirectory->childCount; i++) {
+        if (strcmp(currentDirectory->children[i]->name, "home") == 0) {
+            homeDir = currentDirectory->children[i];
+            break;
+        }
+    }
+    if (homeDir != NULL) {
+        mv(homeDir, "user_guide.txt", currentDirectory); // Asegúrate de pasar 'homeDir' como el directorio donde está 'user_guide.txt'
+    } else {
+        printf("No se pudo encontrar el directorio 'home'.\n");
+    }
+
+    // Listar después de mover para verificar que 'user_guide.txt' se ha movido a 'root'
+    ls(currentDirectory);
+
+    // Eliminar el directorio 'etc'
+    rm(currentDirectory, "etc");
+
+    // Listar después de eliminar para verificar que 'etc' se ha eliminado
+    ls(currentDirectory);
+
+    // Eliminar todos los nodos antes de salir
     deleteInode(root);
+
     return 0;
 }
